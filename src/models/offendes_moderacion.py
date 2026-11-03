@@ -18,36 +18,16 @@ RUTA_MODELO = BASE_DIR / "models" / "socialtox_regresion_logistica.pkl"
 # Cargar el modelo
 with open(RUTA_MODELO, "rb") as archivo:
     modelo = cloudpickle.load(archivo)
-
-# def analizar_comentario(comentario):
-#     """
-#     Analiza un comentario utilizando el pipeline de
-#     Regresión Logística entrenado para SocialTOX.
-
-#     Categorías:
-#         NO: comentario no ofensivo.
-#         NOE: lenguaje vulgar u obsceno no ofensivo.
-#         OFG: ofensivo dirigido a un grupo.
-#         OFP: ofensivo dirigido a una persona.
-#     """
-
 def analizar_comentario(comentario):
     """
-    # Clasifica un comentario y recomienda una acción de moderación.
+    Analiza un comentario utilizando el pipeline de
+    Regresión Logística entrenado para SocialTOX.
 
-    # Categorías:
-    #     NO: comentario no ofensivo.
-    #     NOE: lenguaje vulgar u obsceno no ofensivo.
-    #     OFG: ofensivo dirigido a un grupo.
-    #     OFP: ofensivo dirigido a una persona.
-
-    Clasifica un comentario utilizando el modelo OffendES.
-
-    Devuelve:
-        - Categoría con mayor probabilidad.
-        - Probabilidad de OFG.
-        - Probabilidades de todas las categorías.
-        - Margen entre las dos probabilidades mayores.
+    Categorías:
+        NO: comentario no ofensivo.
+        NOE: lenguaje vulgar u obsceno no ofensivo.
+        OFG: ofensivo dirigido a un grupo.
+        OFP: ofensivo dirigido a una persona.
     """
 
     comentario = str(comentario).strip()
@@ -63,21 +43,12 @@ def analizar_comentario(comentario):
     clases = modelo.classes_
 
     # Convertir las probabilidades a un diccionario
-    # probabilidades_dict = {
-    #     clase: round(float(probabilidades[i]), 4)
-    #     for i, clase in enumerate(clases)
-    # }
-
-    # Convertir probabilidades a diccionario
     probabilidades_dict = {
-        str(clase): round(float(probabilidades[i]), 4)
+        clase: round(float(probabilidades[i]), 4)
         for i, clase in enumerate(clases)
     }
 
-    # Obtener probabilidad de OFG
-    probabilidad_ofg = probabilidades_dict.get("OFG", 0.0)
-
-    # Calcular margen entre las dos probabilidades mayores
+    # Calcular el margen entre las dos probabilidades mayores
     probabilidades_ordenadas = np.sort(probabilidades)[::-1]
 
     margen = (
@@ -94,29 +65,14 @@ def analizar_comentario(comentario):
         "OFP": "REVISION_HUMANA"
     }
 
-    accion = acciones.get(
-        str(categoria),
-        "REVISION_HUMANA"
-    )
-
-    # return {
-    #     "comentario": comentario,
-    #     "categoria_predicha": str(categoria),
-    #     "probabilidad_OFG": probabilidades_dict.get("OFG", 0.0),
-    #     "probabilidades": probabilidades_dict,
-    #     "margen": round(margen, 4),
-    #     "accion_recomendada": acciones.get(
-    #         categoria,
-    #         "REVISION_HUMANA"
-    #     )
-    # }
-
-    # Devolver resultados
     return {
         "comentario": comentario,
         "categoria_predicha": str(categoria),
-        "probabilidad_OFG": probabilidad_ofg,
+        "probabilidad_OFG": probabilidades_dict.get("OFG", 0.0),
         "probabilidades": probabilidades_dict,
         "margen": round(margen, 4),
-        "accion_recomendada": accion
+        "accion_recomendada": acciones.get(
+            categoria,
+            "REVISION_HUMANA"
+        )
     }
