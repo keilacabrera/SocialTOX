@@ -1,14 +1,11 @@
-
 import os
-
 from pathlib import Path
 from uuid import uuid4
 from datetime import datetime, timezone
-
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
+from pydantic import BaseModel, Field
 
 from src.models.offendes_moderacion import analizar_comentario
 from api.moderation_store import moderation_store
@@ -19,6 +16,7 @@ app = FastAPI(
     description="API para detección y moderación de lenguaje ofensivo",
     version="1.0.0"
 )
+
 
 # Configuración CORS para conectar Vue con FastAPI
 app.add_middleware(
@@ -65,7 +63,6 @@ def comprobar_salud():
         "estado": "correcto",
         "servicio": "SocialTOX Backend"
     }
-
 
 @app.get("/sesion")
 def obtener_sesion(request: Request):
@@ -140,12 +137,9 @@ def analizar(solicitud: SolicitudAnalisis, request: Request):
         session_id,
         resultado_modelo
     )
-
-    # resultado = analizar_comentario(comentario)
-
-    # return resultado
     # Combinar los resultados del modelo y de moderación.
     return {
         **resultado_modelo,
         "moderacion": resultado_moderacion
     }
+
