@@ -7,17 +7,7 @@ const resultado = ref(null)
 const cargando = ref(false)
 const error = ref('')
 
-// Estado de la restricción.
-const restriccionActiva = ref(false)
-const segundosRestantes = ref(0)
-const duracionRestriccion = ref(0)
-const mensajeRestriccion = ref('')
-
-// Identificador del temporizador.
-let intervaloRestriccion = null
-
-// const API_URL = 'http://127.0.0.1:8000'
-const API_URL = 'http://localhost:8000'
+const API_URL = 'http://127.0.0.1:8000'
 
 const categorias = {
   NO: 'No ofensivo',
@@ -34,68 +24,7 @@ const acciones = {
   REVISION_POR_INCERTIDUMBRE: 'Revisión por incertidumbre',
 }
 
-// Convierte los segundos restantes a formato MM:SS.
-const tiempoFormateado = computed(() => {
-  const minutos = Math.floor(segundosRestantes.value / 60)
-  const segundos = segundosRestantes.value % 60
-
-  return `${String(minutos).padStart(2, '0')}:${String(segundos).padStart(2, '0')}`
-})
-
-const progresoRestriccion = computed(() => {
-  if (!duracionRestriccion.value) return 0
-
-  return Math.min(
-    100,
-    (segundosRestantes.value / duracionRestriccion.value) * 100
-  )
-})
-
-// Inicia o reinicia la cuenta regresiva.
-function iniciarCuentaRegresiva(segundos) {
-  // Evitar temporizadores duplicados.
-  if (intervaloRestriccion !== null) {
-    clearInterval(intervaloRestriccion)
-    intervaloRestriccion = null
-  }
-
-  const duracion = Math.max(0, Number(segundos) || 0)
-
-  duracionRestriccion.value = duracion
-
-  restriccionActiva.value = true
-  segundosRestantes.value = duracion
-
-  // Utilizar una fecha límite para evitar desviaciones
-  // si el navegador retrasa la ejecución del intervalo.
-  const fechaFin = Date.now() + duracion * 1000
-
-  intervaloRestriccion = setInterval(() => {
-    const restante = Math.ceil(
-      (fechaFin - Date.now()) / 1000
-    )
-
-    segundosRestantes.value = Math.max(0, restante)
-
-    if (restante <= 0) {
-      clearInterval(intervaloRestriccion)
-      intervaloRestriccion = null
-
-      console.log('Resultado al finalizar:', resultado.value)
-
-      restriccionActiva.value = false
-      mensajeRestriccion.value =
-        'El periodo de restricción ha finalizado. Ya puedes volver a intentarlo.'
-    }
-  }, 1000)
-}
-
 async function analizarComentario() {
-
-  if (restriccionActiva.value) {
-    return
-  }
-
   if (!comentario.value.trim()) {
     error.value = 'Escribe un comentario antes de analizar.'
     return
@@ -103,7 +32,7 @@ async function analizarComentario() {
 
   cargando.value = true
   error.value = ''
-  // resultado.value = null
+  resultado.value = null
 
   try {
     const respuesta = await fetch(`${API_URL}/analizar`, {
@@ -116,34 +45,11 @@ async function analizarComentario() {
       }),
     })
 
-    const datos = await respuesta.json()
-
-    // Manejar una restricción activa.
-    if (respuesta.status === 429) {
-      const detalle = datos.detail || {}
-
-      mensajeRestriccion.value =
-        detalle.mensaje || 'Tienes una restricción activa.'
-
-      iniciarCuentaRegresiva(
-        detalle.tiempo_restante_segundos
-      )
-
-      return
-    }
-
     if (!respuesta.ok) {
       throw new Error(`Error del servidor: ${respuesta.status}`)
     }
 
-    // resultado.value = await respuesta.json()
-    // La respuesta ahora contiene el análisis y la moderación.
-    resultado.value = datos
-
-    // Limpiar posibles mensajes de restricciones anteriores.
-    mensajeRestriccion.value = ''
-    restriccionActiva.value = false
-    
+    resultado.value = await respuesta.json()
   } catch (e) {
     error.value =
       'No se pudo conectar con el backend. Comprueba que FastAPI esté funcionando.'
