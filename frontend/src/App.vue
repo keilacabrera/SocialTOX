@@ -7,31 +7,59 @@ import {
   EJEMPLOS_PRUEBA,
   MUESTRAS_DATASET
 } from './utils/datasetOffendES'
-import {
-  METRICAS_PRODUCCION,
-  COMPARACION_MODELOS,
-  MODELOS_CONFUSION,
-  EFECTO_DECISIONES,
-  TODOS_LOS_EXPERIMENTOS,
-  EJEMPLO_LOTE_DATOS
-} from './utils/metricasData'
+import { EJEMPLO_LOTE_DATOS } from './utils/metricasData'
 
 // --- ESTADO GENERAL Y NAVEGACIÓN ---
 const pestanaActiva = ref('analizar') // 'analizar' | 'lote' | 'metricas' | 'datos' | 'historial'
 const apiConectada = ref(false)
-const API_URL = '/api'
+// Por defecto se conecta directamente al FastAPI de SocialTOX (puerto 8000).
+// Se puede sobrescribir con VITE_API_URL=http://localhost:8000/api.
+const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000/api').replace(/\/$/, '')
 const sesionLista = ref(false)
 let promesaSesion = null
 const ahora = ref(Date.now())
-const segundosRestantes = computed(() => Math.max(0, Math.ceil((Date.parse(restriccionActiva.value?.fecha_fin) - ahora.value) / 1000)) || 0)
-const bloqueado = computed(() => segundosRestantes.value > 0)
+const verificacionPendiente = ref(false)
+const restriccionActiva = ref(null)
+const segundosRestantes = computed(() => {
+  const fin = Date.parse(restriccionActiva.value?.fecha_fin || '')
+  return Number.isFinite(fin) ? Math.max(0, Math.ceil((fin - ahora.value) / 1000)) : 0
+})
+// Aunque el reloj llegue a cero, no se desbloquea hasta confirmar con FastAPI.
+const bloqueado = computed(() => !!restriccionActiva.value)
+const tiempoFormateado = computed(() => {
+  const m = Math.floor(segundosRestantes.value / 60)
+  const s = segundosRestantes.value % 60
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+})
+const duracionRestriccion = ref(0)
+const progresoRestriccion = computed(() => duracionRestriccion.value
+  ? Math.min(100, Math.max(0, segundosRestantes.value / duracionRestriccion.value * 100))
+  : 0)
 let reloj
+let comprobandoVencimiento = false
+
+function actualizarRestriccion(data) {
+  if (typeof data?.infracciones === 'number') infraccionesSesion.value = data.infracciones
+  if (data?.estado !== 'RESTRINGIDO') {
+    restriccionActiva.value = null
+    duracionRestriccion.value = 0
+    verificacionPendiente.value = false
+    return
+  }
+  const fin = Date.parse(data.fecha_fin || '')
+  const resto = Number(data.tiempo_restante_segundos ?? (data.duracion_minutos ?? 0) * 60)
+  // El backend envía fecha_fin; conservarla para evitar desbloqueo por refresco.
+  const fecha_fin = Number.isFinite(fin) ? data.fecha_fin : new Date(Date.now() + Math.max(0, resto) * 1000).toISOString()
+  restriccionActiva.value = { ...data, fecha_fin, mensaje: data.mensaje || 'Tienes una restricción activa.' }
+  ahora.value = Date.now()
+  duracionRestriccion.value = Math.max(duracionRestriccion.value, segundosRestantes.value)
+  verificacionPendiente.value = segundosRestantes.value === 0
+}
 
 // --- PESTAÑA: ANALIZAR ---
 const comentario = ref('')
 const cargando = ref(false)
 const errorAnalisis = ref('')
-const restriccionActiva = ref(null)
 const infraccionesSesion = ref(0)
 const resultadoAnalisis = ref(null)
 const pipelineNLP = ref(null)
@@ -47,8 +75,77 @@ const filasOmitidas = ref([])
 const resultadosLote = ref([])
 const inputArchivoRef = ref(null)
 
-// --- PESTAÑA: MÉTRICAS (Imágenes 3, 4 y 5) ---
-const modeloConfusionActivo = ref('regresion') // 'regresion' | 'naive_bayes' | 'linea_base'
+// --- PESTAÑA: MÉTRICAS ---
+// Se obtienen directamente del endpoint GET /api/metricas de FastAPI.
+const metricasBackend = ref(null)
+const cargandoMetricas = ref(false)
+const errorMetricas = ref('')
+const modeloConfusionActivo = ref('regresion_logistica')
+const nombresModelos = {
+  regresion_logistica: 'Regresión logística',
+  xgboost: 'XGBoost'
+}
+const modelosDisponibles = computed(() => Object.keys(metricasBackend.value?.modelos || {})
+  .map(clave => ({ clave, nombre: nombresModelos[clave] || clave })))
+const categoriasEvaluacion = computed(() => metricasBackend.value?.categorias || [])
+const modelosEvaluados = computed(() => metricasBackend.value?.modelos || {})
+const modeloEvaluadoActual = computed(() => modelosEvaluados.value[modeloConfusionActivo.value] || null)
+const porcentajeEvaluacion = valor => Number.isFinite(Number(valor)) ? `${(Number(valor) * 100).toFixed(2)} %` : '—'
+const tresDecimales = valor => Number.isFinite(Number(valor)) ? Number(valor).toFixed(3) : '—'
+const matrizEvaluacion = computed(() => modeloEvaluadoActual.value?.matriz_confusion || [])
+const reporteEvaluacion = computed(() => modeloEvaluadoActual.value?.reporte || {})
+
+async function cargarMetricas() {
+  if (cargandoMetricas.value) return
+  cargandoMetricas.value = true
+  errorMetricas.value = ''
+  try {
+    // Se evita mostrar métricas antiguas si falla la actualización.
+    const datos = await solicitarAPI('/metricas')
+    if (!datos?.modelos || !Array.isArray(datos.categorias) || !datos.total_comentarios) {
+      throw new Error('La API devolvió un formato de métricas inesperado.')
+    }
+    metricasBackend.value = datos
+    if (!datos.modelos[modeloConfusionActivo.value]) {
+      modeloConfusionActivo.value = Object.keys(datos.modelos)[0] || ''
+    }
+  } catch (err) {
+    errorMetricas.value = err.message
+  } finally {
+    cargandoMetricas.value = false
+  }
+}
+
+// --- ESTADÍSTICAS DE USO EN VIVO (independientes de las métricas de evaluación) ---
+const estadisticasVivo = ref(null)
+const cargandoEstadisticas = ref(false)
+const errorEstadisticas = ref('')
+const actualizadasEstadisticas = ref(null)
+let intervaloEstadisticas = null
+const categoriasVivo = ['NO', 'NOE', 'OFG', 'OFP']
+const totalVivo = computed(() => Number(estadisticasVivo.value?.total_comentarios || 0))
+const conteoCategoriaVivo = cat => Number(estadisticasVivo.value?.categorias?.[cat] || 0)
+const porcentajeCategoriaVivo = cat => totalVivo.value > 0
+  ? (conteoCategoriaVivo(cat) / totalVivo.value * 100).toFixed(1)
+  : '0.0'
+
+async function cargarEstadisticas() {
+  if (cargandoEstadisticas.value) return
+  cargandoEstadisticas.value = true
+  try {
+    const datos = await solicitarAPI('/estadisticas')
+    if (!datos || typeof datos.total_comentarios !== 'number' || !datos.categorias) {
+      throw new Error('La API devolvió un formato de estadísticas inesperado.')
+    }
+    estadisticasVivo.value = datos
+    actualizadasEstadisticas.value = new Date().toLocaleTimeString('es-BO')
+    errorEstadisticas.value = ''
+  } catch (err) {
+    errorEstadisticas.value = err.message
+  } finally {
+    cargandoEstadisticas.value = false
+  }
+}
 
 // --- PESTAÑA: DATOS ---
 const filtroDatos = ref('TODOS')
@@ -58,49 +155,77 @@ const busquedaDatos = ref('')
 const historialAnalisis = ref([])
 const filtroHistorial = ref('TODOS')
 
-// La cookie de sesión se conserva mediante el proxy del mismo origen.
+// Cookies de sesión compartidas entre las solicitudes al mismo backend.
 async function solicitarAPI(ruta, opciones = {}) {
   let respuesta
   try {
     respuesta = await fetch(`${API_URL}${ruta}`, {
-      ...opciones, credentials: 'include', signal: AbortSignal.timeout(30000)
+      ...opciones,
+      credentials: 'include',
+      signal: AbortSignal.timeout(30000)
     })
-  } catch (error) {
+  } catch (err) {
     apiConectada.value = false
-    throw new Error(error.name === 'TimeoutError'
-      ? 'El servidor tardó demasiado. No se obtuvo un resultado; consulta la sesión antes de reintentar.'
-      : 'No se pudo conectar con el backend. Comprueba que esté ejecutándose en el puerto 8005.')
+    throw new Error(err.name === 'TimeoutError'
+      ? 'El servidor tardó demasiado. Comprueba el estado de sesión antes de reintentar.'
+      : 'No se pudo conectar con FastAPI. Comprueba que funcione en http://localhost:8000.')
   }
   apiConectada.value = respuesta.status < 500
   const datos = await respuesta.json().catch(() => null)
+  if (respuesta.status === 429) {
+    if (datos?.detail && typeof datos.detail === 'object') actualizarRestriccion({ ...datos.detail, estado: 'RESTRINGIDO' })
+    throw new Error(datos?.detail?.mensaje || 'Tienes una restricción activa.')
+  }
   if (!respuesta.ok) {
-    if (respuesta.status === 429 && datos?.detail?.fecha_fin) {
-      restriccionActiva.value = datos.detail
-      ahora.value = Date.now()
-    }
     throw new Error(typeof datos?.detail === 'string' ? datos.detail
       : datos?.detail?.mensaje || `El backend respondió con error ${respuesta.status}.`)
   }
-  if (!datos) throw new Error('La API no devolvió una respuesta válida.')
+  if (!datos) throw new Error('La API no devolvió una respuesta JSON válida.')
   return datos
 }
 
 async function verificarSesionBackend() {
   if (!promesaSesion) {
     promesaSesion = solicitarAPI('/sesion').then(data => {
-      infraccionesSesion.value = data.infracciones
+      actualizarRestriccion(data)
       sesionLista.value = true
+      return data
     }).finally(() => { promesaSesion = null })
   }
   return promesaSesion
 }
 
+async function verificarFinRestriccion() {
+  if (comprobandoVencimiento) return
+  comprobandoVencimiento = true
+  verificacionPendiente.value = true
+  try {
+    await verificarSesionBackend()
+    errorAnalisis.value = ''
+  } catch (err) {
+    errorAnalisis.value = 'No se pudo comprobar el fin de la restricción. ' + err.message
+  } finally {
+    comprobandoVencimiento = false
+  }
+}
+
 onMounted(async () => {
-  reloj = setInterval(() => { ahora.value = Date.now() }, 1000)
+  reloj = setInterval(() => {
+    ahora.value = Date.now()
+    if (bloqueado.value && segundosRestantes.value === 0 && !verificacionPendiente.value) {
+      void verificarFinRestriccion()
+    }
+  }, 1000)
   try { await verificarSesionBackend() }
-  catch (error) { errorAnalisis.value = error.message }
+  catch (err) { errorAnalisis.value = err.message }
+  void cargarMetricas()
+  void cargarEstadisticas()
+  intervaloEstadisticas = setInterval(() => { void cargarEstadisticas() }, 5000)
 })
-onUnmounted(() => clearInterval(reloj))
+onUnmounted(() => {
+  clearInterval(reloj)
+  if (intervaloEstadisticas !== null) clearInterval(intervaloEstadisticas)
+})
 
 function cargarEjemplo(texto) {
   if (cargando.value || cargandoLote.value) return
@@ -117,9 +242,7 @@ async function consultarModelo(texto) {
     throw new Error('La respuesta no contiene la clasificación y moderación esperadas.')
   }
   const mod = pred.moderacion
-  infraccionesSesion.value = mod.infracciones
-  restriccionActiva.value = mod.estado === 'RESTRINGIDO' ? mod : null
-  ahora.value = Date.now()
+  actualizarRestriccion(mod)
   const resultado = {
     texto, categoria: pred.categoria_predicha,
     probabilidad: (pred.probabilidades[pred.categoria_predicha] * 100).toFixed(2) + ' %',
@@ -144,6 +267,7 @@ async function analizarTextoActual() {
   try {
     pipelineNLP.value = procesarPipelineNLP(texto)
     resultadoAnalisis.value = await consultarModelo(texto)
+    void cargarEstadisticas()
     latenciaMs.value = Math.round(performance.now() - inicio)
   } catch (error) {
     errorAnalisis.value = error.message
@@ -202,7 +326,7 @@ async function clasificarArchivoLote() {
       resultadosLote.value.push({ fila: i + 1, texto, sentimiento: res.categoria, probabilidad: res.probabilidad, moderacion: res.moderacion })
     }
   } catch (error) { errorLote.value = error.message }
-  finally { cargandoLote.value = false }
+  finally { cargandoLote.value = false; void cargarEstadisticas() }
 }
 
 // Resumen del Lote clasificado
@@ -227,7 +351,7 @@ const statsLoteResumen = computed(() => {
 
 function descargarResultadosLoteCsv() {
   if (resultadosLote.value.length === 0) return
-  const headers = ['Fila', 'Texto', 'Sentimiento', 'Probabilidad']
+  const headers = ['Fila', 'Texto', 'Categoría', 'Probabilidad']
   const filas = resultadosLote.value.map(r =>
     `"${r.fila}";"${r.texto.replace(/"/g, '""')}";"${r.sentimiento}";"${r.probabilidad}"`
   )
@@ -271,15 +395,15 @@ function limpiarHistorial() {
       <div class="nav-container">
         <div class="brand-group">
           <div>
-            <h1 class="brand-title">Opiniómetro</h1>
-            <p class="brand-subtitle">Sentimiento de reseñas de restaurantes en español</p>
+            <h1 class="brand-title">SocialTOX</h1>
+            <p class="brand-subtitle">Detección y moderación de lenguaje ofensivo en español</p>
           </div>
         </div>
 
         <!-- BADGE ESTADO (Conexión visible al backend) -->
         <div class="system-status-pill" :class="{ 'connected-pill': apiConectada }">
           <span class="status-indicator-dot" :class="{ 'dot-online': apiConectada }"></span>
-          Regresión logística · {{ apiConectada ? 'API conectada' : 'API sin conexión' }}
+          OffendES · {{ apiConectada ? 'API conectada' : 'API sin conexión' }}
         </div>
       </div>
 
@@ -327,14 +451,24 @@ function limpiarHistorial() {
 
     <!-- CONTENIDO PRINCIPAL -->
     <main class="main-body">
-      <div class="session-status-note" role="status">
-        Infracciones acumuladas: {{ infraccionesSesion }}
-        <div v-if="bloqueado" class="error-banner">
-          RESTRINGIDO · {{ restriccionActiva.mensaje }}
-          Tiempo restante: {{ Math.floor(segundosRestantes / 60) }} min {{ segundosRestantes % 60 }} s.
+      <div class="session-status-note" role="status">Infracciones acumuladas: <strong>{{ infraccionesSesion }}</strong></div>
+      <section v-if="bloqueado" class="aviso-restriccion" role="alert" aria-live="polite">
+        <div class="restriccion-cabecera">
+          <strong>Restricción activa</strong>
+          <span class="restriccion-etiqueta">RESTRINGIDO</span>
         </div>
-        <p v-else-if="restriccionActiva">El periodo de restricción ha finalizado. Puedes volver a analizar.</p>
-      </div>
+        <p>{{ restriccionActiva.mensaje }}</p>
+        <p>Infracciones acumuladas: <strong>{{ infraccionesSesion }}</strong></p>
+        <div class="restriccion-tiempo">{{ tiempoFormateado }}</div>
+        <div class="restriccion-barra-fondo">
+          <div class="restriccion-barra" :style="{ width: `${progresoRestriccion}%` }"></div>
+        </div>
+        <p v-if="segundosRestantes > 0">El análisis individual y por lotes está bloqueado hasta finalizar la restricción.</p>
+        <p v-else>El tiempo terminó. Se necesita confirmar con FastAPI que la sesión está habilitada.</p>
+        <button v-if="segundosRestantes === 0" class="btn-comprobar" :disabled="comprobandoVencimiento" @click="verificarFinRestriccion">
+          {{ comprobandoVencimiento ? 'Verificando...' : 'Verificar estado con servidor' }}
+        </button>
+      </section>
 
       <!-- ==================================================================== -->
       <!-- PESTAÑA 1: ANALIZAR (DISEÑO 2 COLUMNAS · IMÁGENES 1, 2 Y 3 PREVIAS)  -->
@@ -346,7 +480,7 @@ function limpiarHistorial() {
           <div class="left-column">
             <!-- TARJETA: ESCRIBE UNA RESEÑA -->
             <div class="content-card">
-              <h2 class="card-heading">Escribe una reseña</h2>
+              <h2 class="card-heading">Escribe un comentario</h2>
               <p class="card-subheading">El modelo OffendES detecta lenguaje ofensivo y aplica la moderación de tu sesión.</p>
 
               <div class="input-wrapper">
@@ -355,8 +489,8 @@ function limpiarHistorial() {
                   class="comment-textarea"
                   rows="4"
                   maxlength="1000"
-                  placeholder="Ej.: El silpancho estaba frío y tardaron muchísimo..."
-                  :disabled="cargando"
+                  placeholder="Escribe un comentario para evaluar si contiene lenguaje ofensivo..."
+                  :disabled="cargando || bloqueado"
                 ></textarea>
 
                 <div class="textarea-footer">
@@ -367,7 +501,7 @@ function limpiarHistorial() {
                     @click="analizarTextoActual"
                   >
                     <span v-if="cargando" class="spinner"></span>
-                    {{ cargando ? 'Analizando...' : 'Analizar' }}
+                    {{ cargando ? 'Analizando...' : (bloqueado ? 'Análisis bloqueado' : 'Analizar') }}
                   </button>
                 </div>
               </div>
@@ -479,7 +613,7 @@ function limpiarHistorial() {
               <p class="card-subheading">Visualización didáctica local. La clasificación y la moderación provienen del backend; la API no expone los pasos internos del modelo.</p>
 
               <div v-if="!pipelineNLP" class="pipeline-empty-state">
-                <p>Analiza una reseña para ver cada paso.</p>
+                <p>Analiza un comentario para ver cada paso.</p>
               </div>
 
               <div v-else class="pipeline-steps-container">
@@ -716,280 +850,115 @@ function limpiarHistorial() {
       <!-- PESTAÑA 3: MÉTRICAS (Fiel a Imágenes 3, 4 y 5)                       -->
       <!-- ==================================================================== -->
       <div v-show="pestanaActiva === 'metricas'" class="metrics-view">
-        <p class="error-banner">Datos de demostración del frontend. La API actual no ofrece métricas de entrenamiento.</p>
-
-        <!-- SECCIÓN 1: EN PRODUCCIÓN: REGRESIÓN LOGÍSTICA (Imagen 3) -->
+        <!-- Estadísticas operativas: se obtienen de /api/estadisticas cada 5 segundos -->
         <div class="content-card">
-          <h2 class="card-heading">En producción: {{ METRICAS_PRODUCCION.modelo }}</h2>
-          <p class="card-subheading">{{ METRICAS_PRODUCCION.configuracion }}</p>
-
+          <div class="estadisticas-vivo-encabezado">
+            <div>
+              <h2 class="card-heading">Monitoreo en vivo de SocialTOX</h2>
+              <p class="card-subheading">Datos reales de uso registrados por FastAPI · Actualización automática cada 5 segundos.</p>
+            </div>
+            <button class="btn-primary-analyze" :disabled="cargandoEstadisticas" @click="cargarEstadisticas">
+              {{ cargandoEstadisticas ? 'Actualizando...' : 'Actualizar estadísticas' }}
+            </button>
+          </div>
+          <p v-if="errorEstadisticas" class="error-banner" role="alert">{{ errorEstadisticas }}. Comprueba GET /api/estadisticas.</p>
+          <template v-if="estadisticasVivo">
+            <div class="production-kpis-grid">
+              <div class="prod-kpi-box"><div class="prod-kpi-val">{{ totalVivo }}</div><div class="prod-kpi-label">Comentarios analizados</div></div>
+              <div class="prod-kpi-box"><div class="prod-kpi-val">{{ estadisticasVivo.comentarios_ofensivos }}</div><div class="prod-kpi-label">Comentarios OFP + OFG</div></div>
+              <div class="prod-kpi-box"><div class="prod-kpi-val">{{ estadisticasVivo.infracciones_registradas }}</div><div class="prod-kpi-label">Infracciones registradas*</div></div>
+              <div class="prod-kpi-box"><div class="prod-kpi-val">{{ estadisticasVivo.restricciones_aplicadas }}</div><div class="prod-kpi-label">Restricciones aplicadas</div></div>
+              <div class="prod-kpi-box"><div class="prod-kpi-val">{{ Number(estadisticasVivo.latencia_promedio_ms || 0).toFixed(2) }} ms</div><div class="prod-kpi-label">Latencia media de análisis</div></div>
+            </div>
+            <h3 class="card-subheading-bold" style="margin-top:22px">Distribución de clasificaciones registradas</h3>
+            <div v-for="cat in categoriasVivo" :key="cat" class="estadisticas-categoria-fila">
+              <div class="estadisticas-categoria-titulo">
+                <span>{{ cat }} · {{ CATEGORIAS_INFO[cat]?.nombre || cat }}</span>
+                <span>{{ conteoCategoriaVivo(cat) }} ({{ porcentajeCategoriaVivo(cat) }} %)</span>
+              </div>
+              <div class="estadisticas-barra-fondo"><div class="estadisticas-barra" :style="{ width: porcentajeCategoriaVivo(cat) + '%' }"></div></div>
+            </div>
+            <p class="card-subheading" style="margin-top:16px; margin-bottom:0">Última actualización: {{ actualizadasEstadisticas }}. Contadores en memoria: se reinician cuando FastAPI se reinicia. *El conteo de infracciones depende de los estados definidos en estadisticas_store.py.</p>
+          </template>
+          <p v-else-if="!cargandoEstadisticas" class="card-subheading">Todavía no se han recibido estadísticas del backend.</p>
+        </div>
+        <div class="content-card">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+            <h2 class="card-heading">Evaluación real de OffendES</h2>
+            <button class="btn-primary-analyze" :disabled="cargandoMetricas" @click="cargarMetricas">
+              {{ cargandoMetricas ? 'Cargando...' : 'Actualizar desde FastAPI' }}
+            </button>
+          </div>
+          <p v-if="errorMetricas" class="error-banner" role="alert">{{ errorMetricas }}</p>
+          <p v-if="!metricasBackend" class="card-subheading">
+            {{ cargandoMetricas ? 'Consultando /api/metricas...' : 'Sin resultados. Comprueba el backend y pulsa Actualizar desde FastAPI.' }}
+          </p>
+          <template v-if="metricasBackend">
+          <p class="card-subheading">Fuente: resultados_modelos.json · Conjunto {{ metricasBackend.conjunto }} · {{ metricasBackend.total_comentarios.toLocaleString('es-BO') }} comentarios · Categorías: {{ categoriasEvaluacion.join(', ') }}.</p>
+          <p class="metrics-info-note">Evaluación histórica guardada (GET /api/metricas). Los indicadores de uso en vivo se muestran arriba; la exactitud y el F1 requieren etiquetas reales y no cambian con cada nuevo comentario.</p>
           <div class="production-kpis-grid">
-            <div class="prod-kpi-box">
-              <div class="prod-kpi-val">{{ METRICAS_PRODUCCION.kpis.f1Cv }}</div>
-              <div class="prod-kpi-label">F1 macro (validación cruzada)</div>
-            </div>
-
-            <div class="prod-kpi-box">
-              <div class="prod-kpi-val">{{ METRICAS_PRODUCCION.kpis.f1Prueba }}</div>
-              <div class="prod-kpi-label">F1 macro (prueba)</div>
-            </div>
-
-            <div class="prod-kpi-box highlight-blue">
-              <div class="prod-kpi-val text-blue">{{ METRICAS_PRODUCCION.kpis.exactitudPrueba }}</div>
-              <div class="prod-kpi-label">Exactitud (prueba)</div>
-            </div>
-
-            <div class="prod-kpi-box">
-              <div class="prod-kpi-val">{{ METRICAS_PRODUCCION.kpis.terminosVocabulario }}</div>
-              <div class="prod-kpi-label">Términos en el vocabulario TF-IDF</div>
-            </div>
+            <div class="prod-kpi-box"><div class="prod-kpi-val">{{ porcentajeEvaluacion(modelosEvaluados.regresion_logistica.accuracy) }}</div><div class="prod-kpi-label">Exactitud · Regresión logística</div></div>
+            <div class="prod-kpi-box"><div class="prod-kpi-val">{{ porcentajeEvaluacion(modelosEvaluados.regresion_logistica.f1_macro) }}</div><div class="prod-kpi-label">F1 macro · Regresión logística</div></div>
+            <div class="prod-kpi-box"><div class="prod-kpi-val">{{ porcentajeEvaluacion(modelosEvaluados.xgboost.accuracy) }}</div><div class="prod-kpi-label">Exactitud · XGBoost</div></div>
+            <div class="prod-kpi-box"><div class="prod-kpi-val">{{ porcentajeEvaluacion(modelosEvaluados.xgboost.f1_macro) }}</div><div class="prod-kpi-label">F1 macro · XGBoost</div></div>
           </div>
-
-          <div class="prod-footer-note">
-            {{ METRICAS_PRODUCCION.nota }}
-          </div>
+          </template>
         </div>
 
-        <!-- SECCIÓN 2: COMPARACIÓN DE MODELOS (Imagen 3) -->
+        <template v-if="metricasBackend">
         <div class="content-card">
-          <h2 class="card-heading">Comparación de modelos</h2>
-          <p class="card-subheading">Cada modelo con su mejor configuración. La línea base demuestra que el modelo aporta valor.</p>
-
-          <div class="table-scroll">
-            <table class="metrics-comparison-table">
-              <thead>
-                <tr>
-                  <th>Modelo</th>
-                  <th>Configuración</th>
-                  <th>F1 macro CV</th>
-                  <th>Exactitud prueba</th>
-                  <th>F1 macro prueba</th>
-                  <th>F1 negativo</th>
-                  <th>F1 neutro</th>
-                  <th>F1 positivo</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="(mod, i) in COMPARACION_MODELOS"
-                  :key="i"
-                  :class="{ 'row-winner': mod.esGanador }"
-                >
-                  <td class="font-bold">{{ mod.modelo }}</td>
-                  <td class="config-cell">{{ mod.configuracion }}</td>
-                  <td class="font-mono">{{ mod.f1Cv }}</td>
-                  <td class="font-mono">{{ mod.exactitudPrueba }}</td>
-                  <td class="font-mono">{{ mod.f1Prueba }}</td>
-                  <td class="font-mono">{{ mod.f1Negativo }}</td>
-                  <td class="font-mono">{{ mod.f1Neutro }}</td>
-                  <td class="font-mono">{{ mod.f1Positivo }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <h2 class="card-heading">Comparación de modelos evaluados</h2>
+          <p class="card-subheading">Resultados observados sobre el mismo conjunto de prueba.</p>
+          <div class="table-scroll"><table class="metrics-comparison-table">
+            <thead><tr><th>Modelo</th><th>Exactitud</th><th>F1 macro</th><th>Precisión macro</th><th>Recall macro</th><th>F1 NO</th><th>F1 NOE</th><th>F1 OFG</th><th>F1 OFP</th></tr></thead>
+            <tbody>
+              <tr v-for="m in modelosDisponibles" :key="m.clave">
+                <td class="font-bold">{{ m.nombre }}</td>
+                <td class="font-mono">{{ porcentajeEvaluacion(modelosEvaluados[m.clave].accuracy) }}</td>
+                <td class="font-mono">{{ porcentajeEvaluacion(modelosEvaluados[m.clave].f1_macro) }}</td>
+                <td class="font-mono">{{ porcentajeEvaluacion(modelosEvaluados[m.clave].precision_macro) }}</td>
+                <td class="font-mono">{{ porcentajeEvaluacion(modelosEvaluados[m.clave].recall_macro) }}</td>
+                <td v-for="cat in categoriasEvaluacion" :key="cat" class="font-mono">{{ tresDecimales(modelosEvaluados[m.clave].f1_por_clase[cat]) }}</td>
+              </tr>
+            </tbody>
+          </table></div>
         </div>
 
-        <!-- SECCIÓN 3: MATRIZ DE CONFUSIÓN Y MÉTRICAS POR CLASE (Imagen 4) -->
         <div class="content-card">
           <h2 class="card-heading">Matriz de confusión y métricas por clase</h2>
-          <p class="card-subheading">Conjunto de prueba.</p>
-
-          <!-- SELECTOR DE MODELO (Pills) -->
+          <p class="card-subheading">Filas: etiqueta real · Columnas: etiqueta predicha. Cada matriz utiliza las cuatro categorías de OffendES.</p>
           <div class="model-pills-row">
-            <button
-              class="model-pill-btn"
-              :class="{ active: modeloConfusionActivo === 'naive_bayes' }"
-              @click="modeloConfusionActivo = 'naive_bayes'"
-            >
-              Naive Bayes multinomial
-            </button>
-            <button
-              class="model-pill-btn"
-              :class="{ active: modeloConfusionActivo === 'regresion' }"
-              @click="modeloConfusionActivo = 'regresion'"
-            >
-              Regresión logística
-            </button>
-            <button
-              class="model-pill-btn"
-              :class="{ active: modeloConfusionActivo === 'linea_base' }"
-              @click="modeloConfusionActivo = 'linea_base'"
-            >
-              Línea base (clase más frecuente)
-            </button>
+            <button v-for="m in modelosDisponibles" :key="m.clave" class="model-pill-btn" :class="{ active: modeloConfusionActivo === m.clave }" @click="modeloConfusionActivo = m.clave">{{ m.nombre }}</button>
           </div>
-
-          <!-- GRID DOS COLUMNAS: MATRIZ Y REPORTE -->
-          <div class="grid-confusion-and-metrics">
-
-            <!-- MATRIZ DE CONFUSIÓN -->
-            <div class="confusion-table-container">
-              <table class="confusion-matrix-table">
-                <thead>
-                  <tr>
-                    <th class="matrix-axis-header">Real ↓ / Predicho →</th>
-                    <th v-for="c in MODELOS_CONFUSION[modeloConfusionActivo].matriz.clases" :key="c">
-                      {{ c }}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="(row, rIdx) in MODELOS_CONFUSION[modeloConfusionActivo].matriz.filas"
-                    :key="rIdx"
-                  >
-                    <td class="matrix-class-row-header">{{ row.real }}</td>
-                    <td
-                      v-for="(val, cIdx) in row.valores"
-                      :key="cIdx"
-                      class="confusion-cell"
-                      :class="{
-                        'diag-green-dark': rIdx === cIdx && val > 150,
-                        'diag-green-medium': rIdx === cIdx && val <= 150 && val > 0,
-                        'offdiag-pink': rIdx !== cIdx && val > 0,
-                        'offdiag-zero': val === 0
-                      }"
-                    >
-                      {{ val }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <!-- TABLA MÉTRICAS POR CLASE -->
-            <div class="class-metrics-container">
-              <table class="class-metrics-table">
-                <thead>
-                  <tr>
-                    <th>Clase</th>
-                    <th>Precisión</th>
-                    <th>Recall</th>
-                    <th>F1</th>
-                    <th>Soporte</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="mc in MODELOS_CONFUSION[modeloConfusionActivo].metricasClase"
-                    :key="mc.clase"
-                  >
-                    <td>
-                      <span class="sentiment-pill" :class="'pill-' + mc.color">
-                        {{ mc.clase }}
-                      </span>
-                    </td>
-                    <td class="font-mono">{{ mc.precision }}</td>
-                    <td class="font-mono">{{ mc.recall }}</td>
-                    <td class="font-mono">{{ mc.f1 }}</td>
-                    <td class="text-muted font-mono">{{ mc.soporte }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-          </div>
-        </div>
-
-        <!-- SECCIÓN 4: EFECTO DE CADA DECISIÓN (Imagen 5) -->
-        <div class="content-card">
-          <h2 class="card-heading">Efecto de cada decisión</h2>
-          <p class="card-subheading">Mejor F1 macro en validación cruzada alcanzado con cada opción.</p>
-
-          <div class="decisions-columns-grid">
-            <!-- 1. Lista de stop words -->
-            <div class="decision-col">
-              <h4 class="decision-col-title">Lista de stop words</h4>
-              <div v-for="(item, i) in EFECTO_DECISIONES.stopWords" :key="i" class="decision-item-row">
-                <span class="decision-option-name">{{ item.opcion }}</span>
-                <div class="decision-score-group">
-                  <span class="decision-f1 font-mono">{{ item.f1 }}</span>
-                  <span v-if="item.esMejor" class="badge-best">mejor</span>
-                  <span v-else class="delta-red font-mono">{{ item.delta }}</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- 2. N-gramas -->
-            <div class="decision-col">
-              <h4 class="decision-col-title">N-gramas</h4>
-              <div v-for="(item, i) in EFECTO_DECISIONES.ngramas" :key="i" class="decision-item-row">
-                <span class="decision-option-name">{{ item.opcion }}</span>
-                <div class="decision-score-group">
-                  <span class="decision-f1 font-mono">{{ item.f1 }}</span>
-                  <span v-if="item.esMejor" class="badge-best">mejor</span>
-                  <span v-else class="delta-red font-mono">{{ item.delta }}</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- 3. Stemming vs. lematización -->
-            <div class="decision-col">
-              <h4 class="decision-col-title">Stemming vs. lematización</h4>
-              <div v-for="(item, i) in EFECTO_DECISIONES.normalizacion" :key="i" class="decision-item-row">
-                <span class="decision-option-name">{{ item.opcion }}</span>
-                <div class="decision-score-group">
-                  <span class="decision-f1 font-mono">{{ item.f1 }}</span>
-                  <span v-if="item.esMejor" class="badge-best">mejor</span>
-                  <span v-else class="delta-red font-mono">{{ item.delta }}</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- 4. Modelo -->
-            <div class="decision-col">
-              <h4 class="decision-col-title">Modelo</h4>
-              <div v-for="(item, i) in EFECTO_DECISIONES.modelo" :key="i" class="decision-item-row">
-                <span class="decision-option-name">{{ item.opcion }}</span>
-                <div class="decision-score-group">
-                  <span class="decision-f1 font-mono">{{ item.f1 }}</span>
-                  <span v-if="item.esMejor" class="badge-best">mejor</span>
-                  <span v-else class="delta-red font-mono">{{ item.delta }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- SECCIÓN 5: TODOS LOS EXPERIMENTOS (Imagen 5) -->
-        <div class="content-card">
-          <h2 class="card-heading">Todos los experimentos</h2>
-          <p class="card-subheading">Validación cruzada estratificada de 16 configuraciones, cada una con su búsqueda de hiperparámetros.</p>
-
-          <div class="table-scroll">
-            <table class="experiments-table">
-              <thead>
-                <tr>
-                  <th style="width: 40px;">#</th>
-                  <th>Modelo</th>
-                  <th>Normalización</th>
-                  <th>Stop words</th>
-                  <th>N-gramas</th>
-                  <th>Hiperparámetros</th>
-                  <th>F1 macro CV</th>
-                  <th>Exactitud prueba</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="exp in TODOS_LOS_EXPERIMENTOS"
-                  :key="exp.id"
-                  :class="{ 'row-winner': exp.esGanador }"
-                >
-                  <td class="text-muted font-mono">{{ exp.id }}</td>
-                  <td class="font-bold">{{ exp.modelo }}</td>
-                  <td>{{ exp.normalizacion }}</td>
-                  <td>{{ exp.stopWords }}</td>
-                  <td>{{ exp.ngramas }}</td>
-                  <td class="font-mono text-hyperparams">{{ exp.hiperparametros }}</td>
-                  <td class="font-mono font-bold">{{ exp.f1Cv }}</td>
-                  <td class="font-mono">{{ exp.exactitudPrueba }}</td>
-                </tr>
-              </tbody>
+          <div class="table-scroll" style="margin-bottom: 24px;">
+            <table class="confusion-matrix-table" style="width: 100%; min-width: 530px;">
+              <thead><tr><th class="matrix-axis-header">Real ↓ / Predicho →</th><th v-for="cat in categoriasEvaluacion" :key="cat">{{ cat }}</th><th>Total real</th></tr></thead>
+              <tbody><tr v-for="(fila, i) in matrizEvaluacion" :key="categoriasEvaluacion[i]">
+                <td class="matrix-class-row-header">{{ categoriasEvaluacion[i] }}</td>
+                <td v-for="(valor, j) in fila" :key="j" class="confusion-cell" :class="{ 'diag-green-dark': i === j && valor > 150, 'diag-green-medium': i === j && valor <= 150 && valor > 0, 'offdiag-pink': i !== j && valor > 0, 'offdiag-zero': valor === 0 }">{{ valor }}</td>
+                <td class="font-mono">{{ fila.reduce((total, valor) => total + valor, 0) }}</td>
+              </tr></tbody>
             </table>
           </div>
+          <h3 class="card-subheading-bold">Reporte de clasificación por categoría</h3>
+          <div class="table-scroll"><table class="class-metrics-table" style="width: 100%;">
+            <thead><tr><th>Categoría</th><th>Precisión</th><th>Recall</th><th>F1</th><th>Soporte</th></tr></thead>
+            <tbody><tr v-for="cat in categoriasEvaluacion" :key="cat">
+              <td class="font-bold">{{ cat }}</td>
+              <td class="font-mono">{{ tresDecimales(reporteEvaluacion[cat].precision) }}</td>
+              <td class="font-mono">{{ tresDecimales(reporteEvaluacion[cat].recall) }}</td>
+              <td class="font-mono">{{ tresDecimales(reporteEvaluacion[cat]['f1-score']) }}</td>
+              <td class="font-mono">{{ reporteEvaluacion[cat].support }}</td>
+            </tr></tbody>
+          </table></div>
         </div>
 
+        <div class="content-card">
+          <h2 class="card-heading">Alcance de los resultados</h2>
+          <p class="card-subheading">Este archivo JSON no contiene métricas de validación cruzada, hiperparámetros, análisis del efecto de stop words, n-gramas ni comparaciones con Naive Bayes o una línea base. Estas secciones de demostración se sustituyeron para no presentar números inventados como resultados reales.</p>
+          <p class="card-subheading">Para actualizar estas métricas, actualiza resultados/resultados_modelos.json en el servidor y pulsa «Actualizar desde FastAPI».</p>
+        </div>
+        </template>
       </div>
 
       <!-- ==================================================================== -->
@@ -998,7 +967,7 @@ function limpiarHistorial() {
       <div v-show="pestanaActiva === 'datos'" class="dataset-view">
         <div class="content-card">
           <h2 class="card-heading">Explorador de Datos</h2>
-          <p class="card-subheading">Muestras etiquetadas del conjunto de datos de entrenamiento y evaluación.</p>
+          <p class="card-subheading">Muestras incluidas en el módulo local de datos; verifica su procedencia antes de tratarlas como datos de entrenamiento reales.</p>
 
           <div class="dataset-toolbar">
             <div class="search-input-wrapper">
@@ -1085,13 +1054,30 @@ function limpiarHistorial() {
     <!-- PIE DE PÁGINA (Fiel a Imagen 1, 2, 3...) -->
     <footer class="app-footer">
       <div class="footer-content">
-        Proyecto Integrador · Clasificación y moderación desde FastAPI · <a href="/api/docs" target="_blank" class="footer-link">/api/docs</a>
+        Proyecto Integrador · Clasificación y moderación desde FastAPI · <a :href="`${API_URL.replace(/\/api$/, '')}/docs`" target="_blank" class="footer-link">/api/docs</a>
       </div>
     </footer>
   </div>
 </template>
 
 <style>
+.estadisticas-vivo-encabezado { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+.estadisticas-categoria-fila { margin: 11px 0; }
+.estadisticas-categoria-titulo { display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; font-size:13px; margin-bottom:5px; }
+.estadisticas-barra-fondo { height:11px; background:#e2e8f0; border-radius:999px; overflow:hidden; }
+.estadisticas-barra { height:100%; background:#00796b; border-radius:999px; transition:width .25s ease; }
+/* Restricción integrada: visible en todas las pestañas. */
+.aviso-restriccion { margin: 0 0 24px; padding: 22px; border: 1px solid #f0b4b4; background: #fff4f4; color: #872525; border-radius: 12px; }
+.restriccion-cabecera { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.restriccion-cabecera strong { font-size: 18px; }
+.restriccion-etiqueta { border-radius: 999px; background: #b91c1c; color: white; font-size: 12px; font-weight: 800; padding: 5px 10px; }
+.aviso-restriccion p { margin: 10px 0; line-height: 1.5; }
+.restriccion-tiempo { font-size: 38px; font-weight: 800; letter-spacing: 1px; text-align: center; font-variant-numeric: tabular-nums; margin: 12px 0; }
+.restriccion-barra-fondo { height: 10px; border-radius: 999px; background: #f3cece; overflow: hidden; }
+.restriccion-barra { height: 100%; background: #c83b3b; border-radius: 999px; transition: width 1s linear; }
+.btn-comprobar { padding: 10px 16px; margin-top: 12px; background: #b91c1c; border: none; border-radius: 8px; color: white; font-weight: 700; }
+.btn-comprobar:disabled { opacity: 0.6; cursor: not-allowed; }
+
 .moderation-notice { margin-top: 16px; padding: 16px; border: 1px solid #0f766e; border-radius: 8px; background: #f0fdfa; color: #134e4a; font-size: 14px; line-height: 1.5; }
 .moderation-notice p { margin: 8px 0; }
 .moderation-notice-warning { border-color: #d97706; background: #fffbeb; color: #78350f; }
@@ -2208,4 +2194,6 @@ button {
     gap: 10px;
   }
 }
+
+.metrics-info-note { margin: 12px 0 20px; padding: 12px 16px; border: 1px solid #99d5cb; border-radius: 8px; color: #115e59; background: #f0fdfa; font-size: 13px; }
 </style>

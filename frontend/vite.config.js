@@ -13,12 +13,15 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8005',
+        // Aseguramos que apunte exactamente a tu backend activo
+        target: 'http://127.0.0.1:8000', 
         changeOrigin: true,
-        rewrite: path => path.replace(/^\/api/, ''),
+        // Comentamos esta línea para que NO borre la palabra /api
+        // rewrite: path => path.replace(/^\/api/, ''),
       },
     },
   },
+
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
