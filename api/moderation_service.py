@@ -13,7 +13,7 @@ PENALIZACIONES = {
 
 
 # Umbrales provisionales de confianza.
-UMBRAL_CONFIANZA = 0.80
+UMBRAL_CONFIANZA = 0.60
 UMBRAL_MARGEN = 0.20
 
 
