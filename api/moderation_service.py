@@ -1,5 +1,5 @@
 
-from backend.moderation_store import moderation_store
+from api.moderation_store import moderation_store
 
 
 # Tiempo de restricción según las infracciones confirmadas.
