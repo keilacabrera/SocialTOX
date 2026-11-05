@@ -119,21 +119,61 @@ def comprobar_salud():
 # OBTENER ESTADO DE SESIÓN
 # ==========================================
 
+# @app.get("/api/sesion")
+# def obtener_sesion(request: Request):
+
+#     session_id = obtener_session_id(request)
+
+#     infracciones = moderation_store.obtener_infracciones(
+#         session_id
+#     )
+
+#     restriccion = moderation_store.obtener_restriccion(
+#         session_id
+#     )
+
+#     if restriccion is not None:
+
+#         tiempo_restante = max(
+#             0,
+#             int(
+#                 (
+#                     restriccion - datetime.now(timezone.utc)
+#                 ).total_seconds()
+#             )
+#         )
+
+#         if tiempo_restante > 0:
+#             return {
+#                 "estado": "RESTRINGIDO",
+#                 "infracciones": infracciones,
+#                 "tiempo_restante_segundos": tiempo_restante,
+#                 "fecha_fin": restriccion.isoformat()
+#             }
+
+#     return {
+#         "estado": "ACTIVO",
+#         "infracciones": infracciones,
+#         "tiempo_restante_segundos": 0
+#     }
+
+# ==========================================
+# OBTENER ESTADO DE SESIÓN
+# ==========================================
+
 @app.get("/api/sesion")
 def obtener_sesion(request: Request):
-
     session_id = obtener_session_id(request)
 
-    infracciones = moderation_store.obtener_infracciones(
-        session_id
+    infracciones = moderation_store.obtener_infracciones(session_id)
+
+    advertencias_vulgaridad = (
+        moderation_store.obtener_advertencias_vulgaridad(session_id)
     )
 
-    restriccion = moderation_store.obtener_restriccion(
-        session_id
-    )
+    restriccion = moderation_store.obtener_restriccion(session_id)
 
     if restriccion is not None:
-
         tiempo_restante = max(
             0,
             int(
@@ -147,6 +187,7 @@ def obtener_sesion(request: Request):
             return {
                 "estado": "RESTRINGIDO",
                 "infracciones": infracciones,
+                "advertencias_vulgaridad": advertencias_vulgaridad,
                 "tiempo_restante_segundos": tiempo_restante,
                 "fecha_fin": restriccion.isoformat()
             }
@@ -154,6 +195,7 @@ def obtener_sesion(request: Request):
     return {
         "estado": "ACTIVO",
         "infracciones": infracciones,
+        "advertencias_vulgaridad": advertencias_vulgaridad,
         "tiempo_restante_segundos": 0
     }
 

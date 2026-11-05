@@ -21,6 +21,8 @@ const {
   errorAnalisis,
   infraccionesSesion,
   resultadoAnalisis,
+  advertenciasVulgaridad,
+  advertenciasRestantes,
   pipelineNLP,
   latenciaMs,
   archivoSeleccionado,
@@ -148,6 +150,15 @@ const titulos = {
             <p class="eyebrow">INFRACCIONES</p>
             <h3>{{ sesionLista ? infraccionesSesion : '—' }}</h3>
           </div>
+          <div>
+            <p class="eyebrow">ADVERTENCIAS NOE</p>
+            <h3>
+              {{ sesionLista ? `${advertenciasVulgaridad}/3` : '—' }}
+            </h3>
+            <p class="card-subheading">
+              {{ advertenciasRestantes }} restantes para convertir en infracción
+            </p>
+          </div>
         </div>
         <button
           class="btn-choose-file"
@@ -159,8 +170,10 @@ const titulos = {
         <p v-if="errorAnalisis" class="error-banner" role="alert">{{ errorAnalisis }}</p>
         <h3 class="policy-heading">Reglas vigentes</h3>
         <p class="card-subheading">
-          OFP y OFG generan una infracción con confianza ≥ 80 % y margen ≥ 20 %. NOE recibe una
-          advertencia contextual sin sumar infracciones.
+          Las categorías OFP y OFG generan una infracción directa, sin depender
+          de la confianza ni del margen del modelo. La categoría NOE acumula
+          advertencias independientes: al alcanzar 3 advertencias, se convierten
+          en una infracción. La categoría NO se permite sin modificar los contadores.
         </p>
         <div class="table-scroll">
           <table class="batch-results-table">
@@ -181,7 +194,15 @@ const titulos = {
       </section>
 
       <div class="session-status-note" role="status">
-        Infracciones acumuladas: <strong>{{ infraccionesSesion }}</strong>
+        <p>
+          Infracciones acumuladas:
+          <strong>{{ infraccionesSesion }}</strong>
+        </p>
+
+        <p>
+          Advertencias NOE:
+          <strong>{{ advertenciasVulgaridad }}/3</strong>
+        </p>
       </div>
       <section v-if="bloqueado" class="aviso-restriccion" role="alert" aria-live="polite">
         <div class="restriccion-cabecera">
@@ -189,9 +210,13 @@ const titulos = {
           <span class="restriccion-etiqueta">RESTRINGIDO</span>
         </div>
         <p>{{ restriccionActiva.mensaje }}</p>
-        <!-- <p>
+        <p>
           Infracciones acumuladas: <strong>{{ infraccionesSesion }}</strong>
-        </p> -->
+        </p>
+        <p>
+          Advertencias NOE:
+          <strong>{{ advertenciasVulgaridad }}/3</strong>
+        </p>
         <div class="restriccion-tiempo">{{ tiempoFormateado }}</div>
         <div class="restriccion-barra-fondo">
           <div class="restriccion-barra" :style="{ width: `${progresoRestriccion}%` }"></div>
@@ -320,13 +345,17 @@ const titulos = {
                     : resultadoAnalisis.moderacion.estado.replaceAll('_', ' ')
                 }}</strong>
                 <p>{{ resultadoAnalisis.moderacion.mensaje }}</p>
-                <p v-if="resultadoAnalisis.moderacion.estado === 'SIN_SANCION'">
+                <!-- <p v-if="resultadoAnalisis.moderacion.estado === 'SIN_SANCION'">
                   No se registró una nueva infracción. Clasificar como ofensivo no implica
                   automáticamente una sanción.
+                </p> -->
+                <span>Infracciones acumuladas: {{ resultadoAnalisis.moderacion.infracciones }}</span
+                  
+                  >
+                <p>
+                  Advertencias NOE de la sesión:
+                  <strong>{{ advertenciasVulgaridad }}/3</strong>
                 </p>
-                <span
-                  >Infracciones acumuladas: {{ resultadoAnalisis.moderacion.infracciones }}</span
-                >
               </div>
 
               <div v-if="errorAnalisis" class="error-banner">
@@ -578,8 +607,21 @@ const titulos = {
                     <strong>{{ resultadoAnalisis.moderacion.estado }}</strong>
                     <p class="step-desc">{{ resultadoAnalisis.moderacion.mensaje }}</p>
                     <p class="step-desc">
-                      Infracciones: {{ resultadoAnalisis.moderacion.infracciones }}.
+                      Infracciones acumuladas:
+                      {{ resultadoAnalisis.moderacion.infracciones }}.
                     </p>
+                    <p class="step-desc">
+                      Advertencias NOE:
+                      {{ advertenciasVulgaridad }}/3.
+                    </p>
+                    <p class="step-desc">
+                      Advertencias restantes para convertir en infracción:
+                      {{ advertenciasRestantes }}.
+                    </p>
+                    
+                    <!-- <p class="step-desc">
+                      Infracciones: {{ resultadoAnalisis.moderacion.infracciones }}.
+                    </p> -->
                   </template>
                   <p v-else class="step-desc">Sin decisión del backend para este análisis.</p>
                 </div>

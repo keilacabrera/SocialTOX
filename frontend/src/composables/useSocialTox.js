@@ -42,12 +42,18 @@ export function useSocialTox() {
 
   function actualizarRestriccion(data) {
     if (typeof data?.infracciones === 'number') infraccionesSesion.value = data.infracciones
+    
+    if (typeof data?.advertencias_vulgaridad === 'number') {
+      advertenciasVulgaridad.value = data.advertencias_vulgaridad
+    }
+    
     if (data?.estado !== 'RESTRINGIDO') {
       restriccionActiva.value = null
       duracionRestriccion.value = 0
       verificacionPendiente.value = false
       return
     }
+
     const fin = Date.parse(data.fecha_fin || '')
     const resto = Number(data.tiempo_restante_segundos ?? (data.duracion_minutos ?? 0) * 60)
     // El backend envía fecha_fin; conservarla para evitar desbloqueo por refresco.
@@ -69,6 +75,17 @@ export function useSocialTox() {
   const cargando = ref(false)
   const errorAnalisis = ref('')
   const infraccionesSesion = ref(0)
+  const advertenciasVulgaridad = ref(0)
+
+  const LIMITE_ADVERTENCIAS_VULGARIDAD = 3
+
+  const advertenciasRestantes = computed(() =>
+    Math.max(
+      0,
+      LIMITE_ADVERTENCIAS_VULGARIDAD - advertenciasVulgaridad.value
+    )
+  )
+
   const resultadoAnalisis = ref(null)
   const pipelineNLP = ref(null)
   const latenciaMs = ref(null)
@@ -564,5 +581,7 @@ export function useSocialTox() {
     limpiarHistorial,
     navegar,
     CATEGORIAS_INFO,
+    advertenciasVulgaridad,
+    advertenciasRestantes,  
   }
 }
