@@ -1,38 +1,29 @@
-# frontend
+# SocialTOX · Frontend
 
-This template should help get you started developing with Vue 3 in Vite.
+Interfaz Vue 3 y Vite conectada con FastAPI.
 
-## Recommended IDE Setup
+## Ejecutar
 
-[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+Desde frontend, ejecutar npm.cmd run dev (o npm run dev).
+Si faltan dependencias: npm.cmd install.
+API predeterminada: http://localhost:8000/api. Usar localhost en el frontend para compartir las cookies de sesión.
+VITE_API_URL permite configurar otra URL base terminada en /api.
+Compilación: npm.cmd run build. Previsualización: npm.cmd run preview.
+El servidor de producción debe permitir el origen del frontend mediante CORS; el proxy de Vite solo se aplica al desarrollo.
 
-## Recommended Browser Setup
+## Funciones
 
-- Chromium-based browsers (Chrome, Edge, Brave, etc.):
-  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
-  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
-- Firefox:
-  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
-  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
+Panel con estadísticas reales cada 5 segundos, análisis individual, análisis por lotes, historial temporal con búsqueda y detalles, moderación, evaluación de modelos y muestras locales.
+El historial se borra al recargar. Reevaluar vuelve a enviar el comentario y puede aplicar moderación.
+Las estadísticas operativas se reinician con el backend. Las métricas de evaluación proceden de /api/metricas.
+Los ejemplos y el procesamiento NLP didáctico son locales; no representan trazas internas del modelo.
+Lotes: TXT o CSV de una columna texto, un comentario por línea, hasta 500 líneas y 1 MB, sin saltos dentro del comentario. Una restricción detiene el lote.
 
-## Customize configuration
+## Organización
 
-See [Vite Configuration Reference](https://vite.dev/config/).
-
-## Project Setup
-
-```sh
-npm install
-```
-
-### Compile and Hot-Reload for Development
-
-```sh
-npm run dev
-```
-
-### Compile and Minify for Production
-
-```sh
-npm run build
-```
+src/composables/useSocialTox.js: solicitudes, sesión, restricciones y acciones.
+src/components/: navegación, panel e indicadores reutilizables.
+src/App.vue: coordinación y pantallas de análisis, lotes, historial, moderación, métricas y muestras.
+src/styles/base.css: estilos conservados de los componentes existentes.
+src/styles/theme.css: identidad visual y adaptación móvil.
+No se agregaron dependencias ni se modificó el backend.
