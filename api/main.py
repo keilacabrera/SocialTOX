@@ -1,4 +1,3 @@
-
 import os
 from uuid import uuid4
 from datetime import datetime, timezone
@@ -51,7 +50,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ==========================================
 # CONFIGURACIÓN DE SESIONES
@@ -113,7 +111,6 @@ def comprobar_salud():
         "estado": "correcto",
         "servicio": "SocialTOX Backend"
     }
-
 
 # ==========================================
 # OBTENER ESTADO DE SESIÓN
@@ -261,7 +258,7 @@ def analizar(
         comentario
     )
 
-    # Evaluar y aplicar moderación.
+    # Evaluar la predicción y aplicar la moderación correspondiente.
     resultado_moderacion = evaluar_moderacion(
         session_id,
         resultado_modelo
@@ -311,7 +308,7 @@ def obtener_metricas():
             detail="No se pudieron leer las métricas"
         )
 
- # ==========================================
+# ==========================================
 # ESTADÍSTICAS EN VIVO
 # ==========================================
 
